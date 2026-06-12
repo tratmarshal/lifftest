@@ -85,6 +85,10 @@
     .summary-row { display: grid; grid-template-columns: 120px 1fr; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: #08111f; }
     .summary-row span:first-child { color: var(--muted); }
     .selected-count-chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 999px; background: rgba(37,99,235,.16); color: #bfdbfe; border: 1px solid rgba(37,99,235,.35); font-size: 13px; font-weight: 700; }
+    .section-gap { display: grid; gap: 14px; }
+    .section-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 8px; }
+    .section-head h3 { margin: 0; }
+    .count-chip { display: inline-flex; align-items: center; border-radius: 999px; padding: 4px 9px; color: #bfdbfe; background: rgba(37,99,235,.14); border: 1px solid rgba(37,99,235,.28); font-size: 12px; font-weight: 700; white-space: nowrap; }
     @media (min-width: 761px) { .sticky-actions { display: none !important; } }
     @media (max-width: 760px) { body { padding-bottom: 86px; } th.optional, td.optional { display: none; } .btn { width: 100%; } .actions { width: 100%; } .summary-row { grid-template-columns: 1fr; } }
   </style>
@@ -94,7 +98,7 @@
     <section class="panel topbar">
       <div>
         <h1>จัดการหมายจับ</h1>
-        <div class="muted">บันทึกเหตุได้ตัว และติดตามรายการรอเพิกถอน</div>
+        <div class="muted">บันทึกเหตุที่ทำให้หมายจับสิ้นผล และติดตามงานรอเพิกถอน</div>
       </div>
       <div class="user" id="profileBox">
         <div class="avatar" id="avatar"><i class="fas fa-user"></i></div>
@@ -104,9 +108,9 @@
 
     <section class="panel">
       <div class="topbar" style="padding:0; background:transparent; border:0">
-        <h2>รายการใน processing</h2>
+        <h2>รายการดำเนินการ</h2>
         <div class="actions">
-          <button class="btn secondary" id="syncBtn"><i class="fas fa-arrows-rotate"></i>Sync ตอนนี้</button>
+          <button class="btn secondary" id="syncBtn"><i class="fas fa-arrows-rotate"></i>อัปเดตสถานะ</button>
           <button class="btn secondary" id="reloadBtn"><i class="fas fa-rotate"></i>โหลดใหม่</button>
         </div>
       </div>
@@ -174,7 +178,7 @@
   <div class="confirm-backdrop" id="confirmBackdrop">
     <div class="confirm-modal">
       <h3>ตรวจสอบก่อนบันทึก</h3>
-      <div class="muted">รายการนี้จะถูกบันทึกเข้า processing และ sync สถานะไปยังฐานหมายจับ</div>
+      <div class="muted">รายการนี้จะเปลี่ยนสถานะหมายจับเป็นสิ้นผลรอเพิกถอน</div>
       <div class="summary-list" id="confirmSummary"></div>
       <div class="actions">
         <button class="btn" id="confirmSaveBtn"><i class="fas fa-floppy-disk"></i>ยืนยันบันทึก</button>
@@ -208,7 +212,8 @@
     function syncBadge(status) {
       const s = String(status || "pending");
       const cls = s === "synced" ? "sync-synced" : s === "error" ? "sync-error" : "sync-pending";
-      return `<span class="badge ${cls}">${escapeHtml(s)}</span>`;
+      const label = s === "synced" ? "อัปเดตแล้ว" : s === "error" ? "อัปเดตไม่สำเร็จ" : "รออัปเดต";
+      return `<span class="badge ${cls}">${label}</span>`;
     }
 
     function setMessage(id, message, isError = false) {
@@ -285,7 +290,7 @@
 
     function renderSearchResults() {
       if (!searchResults.length) return;
-      let html = `<div class="table-wrap"><table><thead><tr><th>เลือก</th><th>เลขที่หมายจับ</th><th>ชื่อสกุล</th><th>ประกัน</th><th>สถานะ</th></tr></thead><tbody>`;
+      let html = `<div class="table-wrap"><table><thead><tr><th>เลือก</th><th>เลขที่หมายจับ</th><th>ชื่อสกุล</th><th>ประกัน</th><th>สถานะหมายจับ</th></tr></thead><tbody>`;
       searchResults.forEach((w, index) => {
         const selectable = w.status === STATUS_WANTED;
         html += `<tr>
@@ -299,6 +304,8 @@
       html += `</tbody></table></div>`;
       document.getElementById("warrantResults").innerHTML = html;
       document.getElementById("processForm").classList.remove("hidden");
+      document.querySelectorAll(".warrantCheck").forEach(el => el.addEventListener("change", updateSelectedUi));
+      updateSelectedUi();
     }
 
 
@@ -365,6 +372,7 @@
         setMessage("searchMessage", `บันทึกสำเร็จ ${result.added || selected.length} รายการ`);
         clearForm(false);
         await loadPending();
+        closeAddPanel();
       } catch (err) {
         setMessage("searchMessage", err.message, true);
       } finally {
@@ -380,30 +388,68 @@
         const result = await callGas("getPending");
         const rows = result.data || [];
         if (!rows.length) {
-          box.outerHTML = `<div id="pendingList" class="message">ยังไม่มีรายการใน processing</div>`;
+          box.className = "message";
+          box.innerHTML = "ยังไม่มีรายการดำเนินการ";
           return;
         }
-        let html = `<div id="pendingList" class="table-wrap"><table><thead><tr><th>เวลา</th><th>หมายจับ</th><th>ชื่อสกุล</th><th>เหตุ</th><th>สถานะหมายจับ</th><th>sync</th><th>จัดการ</th></tr></thead><tbody>`;
-        rows.forEach(row => {
-          const canRevoke = row.warrantStatus === STATUS_PENDING && row.syncStatus === "synced";
-          html += `<tr>
-            <td>${escapeHtml(row.timestamp || "")}</td>
-            <td>${escapeHtml(row.warrantNo || "")}</td>
-            <td>${escapeHtml(row.fullName || "")}</td>
-            <td>${escapeHtml(row.reason || "")}${row.reasonDetail ? `<div class="muted">${escapeHtml(row.reasonDetail)}</div>` : ""}</td>
-            <td>${statusBadge(row.warrantStatus)}</td>
-            <td>${syncBadge(row.syncStatus)}${row.syncError ? `<div class="muted">${escapeHtml(row.syncError)}</div>` : ""}</td>
-            <td><button class="btn danger" onclick="markRevoked(${Number(row.rowId)})" ${canRevoke ? "" : "disabled"}>เพิกถอน</button></td>
-          </tr>`;
-        });
-        html += `</tbody></table></div>`;
-        box.outerHTML = html;
+        const activeRows = rows.filter(row => row.warrantStatus !== STATUS_REVOKED);
+        const historyRows = rows.filter(row => row.warrantStatus === STATUS_REVOKED);
+        let html = `<div class="section-gap">`;
+
+        html += `<section>
+          <div class="section-head">
+            <h3>รายการที่ดำเนินอยู่</h3>
+            <span class="count-chip">${activeRows.length} รายการ</span>
+          </div>`;
+        if (!activeRows.length) {
+          html += `<div class="message">ไม่มีรายการที่ดำเนินอยู่</div>`;
+        } else {
+          html += `<div class="table-wrap"><table><thead><tr><th>เวลา</th><th>หมายจับ</th><th>ชื่อสกุล</th><th>เหตุ</th><th>สถานะหมายจับ</th><th>ผลอัปเดต</th><th>จัดการ</th></tr></thead><tbody>`;
+          activeRows.forEach(row => {
+            const canRevoke = row.warrantStatus === STATUS_PENDING && row.syncStatus === "synced";
+            html += `<tr>
+              <td>${escapeHtml(row.timestamp || "")}</td>
+              <td>${escapeHtml(row.warrantNo || "")}</td>
+              <td>${escapeHtml(row.fullName || "")}</td>
+              <td>${escapeHtml(row.reason || "")}${row.reasonDetail ? `<div class="muted">${escapeHtml(row.reasonDetail)}</div>` : ""}</td>
+              <td>${statusBadge(row.warrantStatus)}</td>
+              <td>${syncBadge(row.syncStatus)}${row.syncError ? `<div class="muted">${escapeHtml(row.syncError)}</div>` : ""}</td>
+              <td><button class="btn danger" onclick="markRevoked(${Number(row.rowId)})" ${canRevoke ? "" : "disabled"}>เพิกถอน</button></td>
+            </tr>`;
+          });
+          html += `</tbody></table></div>`;
+        }
+        html += `</section>`;
+
+        html += `<section>
+          <div class="section-head">
+            <h3>ประวัติรายการดำเนินการ</h3>
+            <span class="count-chip">${historyRows.length} รายการ</span>
+          </div>`;
+        if (!historyRows.length) {
+          html += `<div class="message">ยังไม่มีประวัติรายการดำเนินการ</div>`;
+        } else {
+          html += `<div class="table-wrap"><table><thead><tr><th>เวลา</th><th>หมายจับ</th><th>ชื่อสกุล</th><th>เหตุ</th><th>สถานะหมายจับ</th><th>ผลอัปเดต</th></tr></thead><tbody>`;
+          historyRows.forEach(row => {
+            html += `<tr>
+              <td>${escapeHtml(row.timestamp || "")}</td>
+              <td>${escapeHtml(row.warrantNo || "")}</td>
+              <td>${escapeHtml(row.fullName || "")}</td>
+              <td>${escapeHtml(row.reason || "")}${row.reasonDetail ? `<div class="muted">${escapeHtml(row.reasonDetail)}</div>` : ""}</td>
+              <td>${statusBadge(row.warrantStatus)}</td>
+              <td>${syncBadge(row.syncStatus)}${row.syncError ? `<div class="muted">${escapeHtml(row.syncError)}</div>` : ""}</td>
+            </tr>`;
+          });
+          html += `</tbody></table></div>`;
+        }
+        html += `</section></div>`;
+        box.className = "section-gap";
+        box.innerHTML = html;
       } catch (err) {
         box.className = "message error";
         box.innerText = err.message;
       }
     }
-
     async function syncNow() {
       try {
         await callGas("syncProcessing");
@@ -444,6 +490,9 @@
     document.getElementById("reloadBtn").addEventListener("click", loadPending);
     document.getElementById("syncBtn").addEventListener("click", syncNow);
     document.getElementById("id13Input").addEventListener("keydown", e => { if (e.key === "Enter") searchWarrants(); });
+    document.getElementById("id13Input").addEventListener("input", e => {
+      e.target.value = e.target.value.replace(/\D/g, "").slice(0, 13);
+    });
     document.getElementById("reasonSelect").addEventListener("change", e => {
       document.getElementById("reasonDetailBox").classList.toggle("hidden", e.target.value !== "อื่น ๆ");
     });
@@ -461,6 +510,10 @@
   </script>
 </body>
 </html>
+
+
+
+
 
 
 
